@@ -1,6 +1,6 @@
 PL-Stitch
 ---------
-[📚 Paper](https://www.arxiv.org/abs/2511.17805) - [🤖 Code](src) - [🤗 Model](https://huggingface.co/visurg/LemonFM)
+[📚 Paper](https://www.arxiv.org/abs/2511.17805) - [🤖 Code](src) - [🤗 Model](https://huggingface.co/visurg/PL-Stitch)
 
 This is the official repository for the paper [A Stitch in Time: Learning Procedural Workflow via Self-Supervised Plackett-Luce Ranking](https://www.arxiv.org/abs/2511.17805).
 
@@ -45,38 +45,20 @@ Procedural activities, ranging from routine cooking to complex surgical operatio
 
 
 
-Install dependencies to recreate our LEMON dataset
+🔧 Install dependencies
 --------------------------------------------------
-<!--
-* If you want to use Docker**, follow the next steps to download our container:
-
-   ```bash
-   # Download the repo
-   $ git clone git@github.com:visurg-ai/LEMON.git
-   $ cd LEMON/docker
-
-   # Build the docker image
-   $ docker build --build-arg USER=$(whoami) --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t chengan/LEMON:latest .
-
-   # Run videosum Docker container
-   $ docker run --volume $HOME:/mnt/user_home --name LEMON --runtime nvidia chengan/LEMON:latest &
-
-   # Execute the docker container and get into the terminal
-   $ docker exec --user $(whoami) --workdir $HOME -it LEMON /bin/zsh
-   ```
--->
 
 * Install the following dependencies in your local setup:
 
    ```bash
-   $ git clone git@github.com:visurg-ai/LEMON.git
-   $ cd LEMON && pip install -r requirements.txt
+   $ git clone git@github.com:visurg-ai/PL-Stitch.git
+   $ cd PL-Stitch && pip install -r requirements.txt
    ```
 
 
 
-LEMON dataset
---------------------------
+🚀 Training
+------------
 
 You can use our code of the data curation pipeline and provided annotation file (["labels.json"](https://github.com/visurg-ai/LEMON/blob/main/labels.json)) to recreate the whole LEMON dataset.
 
@@ -112,33 +94,11 @@ The video processing pipeline leading to the clean videos in the LEMON dataset i
 <img src="https://github.com/user-attachments/assets/cb21d841-ad49-4834-b77e-dbc24fe6699e">
 
 
-LemonFM model
--------------
-You can download the LemonFM full checkpoint which contains backbone and projection head weights for both student and teacher networks at [🤗 LemonFM](https://huggingface.co/visurg/LemonFM).
+🚩 PL-Stitch model
+------------------
 
-**LemonFM pretraining:**
+You can download the checkpoint at [🤗 PL-Stitch](https://huggingface.co/visurg/PL-Stitch) and run the following code to extract features from your video frames.
 
-
-```bash
-$ python3 -m torch.distributed.run --nproc_per_node=8 --nnodes=1 lemonfm/lemonfm.py --arch convnext_large --data_path 'LEMON dataset lmdb path' --output_dir 'your path to store the trained foundation model' --batch_size_per_gpu 40 --num_workers 10
-```
-
-
-**Fine-tuning LemonFM for surgical phase recognition:**
-
-
-```bash
-$ python3 downstream/train_phase_recognition_autolaparo.py --lr 1e-3 --opt adamW --nepochs 100 --bs 512 --cpdir 'path/to/store/checkpoint' --logdir 'path/to/store/log' --lmdb 'path/to/downstream_task/lmdb' --labels 'path/to/downstream_task/annotation' --seed 30 --pretrained-weights 'path/to/our/LemonFM.pth'
-```
-
-```bash
-$ python3 downstream/test_phase_recognition_autolaparo.py --lmdb 'path/to/downstream_task/lmdb' --models 'path/to/your/cpdir' --labels 'path/to/downstream_task/annotation'
-```
-
-
-
-How to run our LemonFM foundation model to extract features from your video frames
-----------------------------------------------------------------------------------
 
    ```python
    import torch
