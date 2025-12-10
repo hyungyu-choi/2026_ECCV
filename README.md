@@ -122,7 +122,7 @@ You can download the checkpoint at [🤗 PL-Stitch](https://huggingface.co/visur
    img_tensor = torch.tensor(np.array(img)).unsqueeze(0).to('cuda')
 
    # Extract features from the image
-   outputs = LemonFM(img_tensor)
+   outputs = pl_stitch(img_tensor)
    ```
 
 
