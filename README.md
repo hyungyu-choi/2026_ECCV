@@ -75,7 +75,7 @@ $ bash scripts/covert_lmdb.sh
 
 🚀 Training
 -----------
-We provide a script with default parameters. Run the following command for training.
+We provide a script with default parameters for PL-Stitch model pretraining.
 
 ```bash
 $ bash scripts/pretrain.sh
@@ -85,7 +85,7 @@ $ bash scripts/pretrain.sh
 
 📊 Evaluation
 --------------
-We provide a script with default parameters for the downstream tasks.
+We provide a script for the downstream task evaluation.
 ```bash
 $ bash scripts/eval.sh
 ```
@@ -109,7 +109,7 @@ You can download the checkpoint at [🤗 PL-Stitch](https://huggingface.co/visur
    ```python
    import torch
    from PIL import Image
-   from model_loader import build_LemonFM
+   from pl_stitch.model.model_loader import build_LemonFM
 
    # Load the pre-trained LemonFM model
    LemonFM = build_LemonFM(pretrained_weights = 'your path to the LemonFM')
