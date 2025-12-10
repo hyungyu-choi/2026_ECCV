@@ -75,40 +75,20 @@ $ bash scripts/covert_lmdb.sh
 
 🚀 Training
 -----------
+We provide a script with default parameters. Run the following command for training.
 
-
-
-
-   You need to provide a "cookies.txt" file if you want to download videos that require Youtube login. 
-
-   Use the [cookies](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) extension to export your Youtube cookies as "cookies.txt".
-
-
-2. Download the annotation file (["labels.json"](https://github.com/visurg-ai/LEMON/blob/main/labels.json)) and use the video downloader to download the original selected Youtube videos.
-
-   ```bash
-   $ python3 src/video_downloader.py --video-path '../labels.json' --output 'your path to store the downloaded videos' --cookies 'your YouTube cookie file'
-   ```
-
-3. Curate the downloaded original videos as LEMON video dataset. In detail, use the video_processor to classify each frame as either 'surgical' or 'non-surgical', then remove the beginning and end segments of non-surgical content from the videos, and mask the non-surgical regions in 'surgical' frames and the entire 'non-surgical' frames.
-
-   ```bash
-   $ python3 src/video_processor.py --input 'your original downloaded video storage path' --input-json '../labels.json' --output 'your path to store the curated videos and their corresponding frame annotation files' --classify-models 'frame classification model' --segment-models 'non-surgical object detection models'
-   ```
-
-
-4. Process the LEMON video dataset as LEMON image dataset (For foundation model pre-training).
-
-   ```bash
-   $ python3 src/create_lmdb_LEMON.py --video-folder 'your directory containing the curated videos and their corresponding frame annotation files' --output-json 'your path for the json file to verify the videos and labels alignment' --lmdb-path 'your lmdb storage path'
-   ```
-
+```bash
+$ bash scripts/pretrain.sh
+```
 
 
 
 📊 Evaluation
 --------------
-
+We provide a script with default parameters for the downstream tasks.
+```bash
+$ bash scripts/eval.sh
+```
 
    
 
