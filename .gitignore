@@ -1,4 +1,5 @@
 checkpoint/
 datasets/
+pl_vitbase16_cholec80
 *.pth
 *.ckpt
