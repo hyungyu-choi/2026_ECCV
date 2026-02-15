@@ -1,5 +1,23 @@
+# 체크포인트 폴더들
 checkpoint/
+pl_stitch/pl_vitbase16_cholec80/
+pl_stitch/pl_vitbase16_cholec80_global/
+
+# 데이터셋
 datasets/
-pl_vitbase16_cholec80
+
+# 사전학습 가중치
+pretrained_weight_lemon/
+
+# 모델 체크포인트 파일들
 *.pth
 *.ckpt
+*.pt
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# KNN 결과 (선택사항 - 필요하면 제외)
+knn_results_cholec80/

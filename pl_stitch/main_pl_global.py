@@ -1,3 +1,18 @@
+"""
+main_pl_global.py
+=================
+Extended version of main_pl.py that trains with BOTH temporal PL losses:
+  1) loss_temporal        — original local randstep sampling (unchanged)
+  2) loss_temporal_global — NEW global 8-segment sampling across entire video
+
+New CLI arguments:
+  --lambda_temporal_global   (default 1.0)   weight for global temporal loss
+  --start_epoch_global       (default 0)     epoch to start global temporal loss
+  --batch_size_global_per_gpu (default same as --batch_size_temporal_per_gpu)
+
+The TemporalHead is shared between both losses (same task, different scale).
+"""
+
 import argparse
 import os
 import sys
@@ -21,10 +36,10 @@ import utils
 import models
 from models.head import iBOTHead, TemporalHead
 from models.puzzle_decoder import PuzzleDecoder
-from loader import ImageFolderMask_puzzle, Temporal_RandStep_dataset, RepeatDataset
+from loader_global import ImageFolderMask_puzzle, Temporal_RandStep_dataset, RepeatDataset
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('pl_stitch', add_help=False)
+    parser = argparse.ArgumentParser('pl_stitch_global', add_help=False)
 
     # --- Model parameters ---
     parser.add_argument('--arch', default='vit_small', type=str,
@@ -68,6 +83,14 @@ def get_args_parser():
     parser.add_argument('--lambda_video', default=1.0, type=float, help="Loss weight for temporal branch.")
     parser.add_argument('--lambda_puzzle', default=0.4, type=float, help="Loss weight for puzzle branch.")
     parser.add_argument('--lambda_temporal', default=1, type=float, help="Loss weight for temporal token masking.")
+    # >>> NEW: global temporal loss weight and schedule
+    parser.add_argument('--lambda_temporal_global', default=1.0, type=float, 
+        help="Loss weight for global temporal PL loss.")
+    parser.add_argument('--start_epoch_global', default=0, type=int, 
+        help="Epoch to start applying global temporal loss (0 = from the beginning).")
+    parser.add_argument('--batch_size_global_per_gpu', default=None, type=int,
+        help="Per-GPU batch size for global temporal clips. Defaults to --batch_size_temporal_per_gpu if not set.")
+    # <<< END NEW
         
     # --- Temperature ---
     parser.add_argument('--warmup_teacher_temp', default=0.04, type=float, help="Initial teacher temperature.")
@@ -116,6 +139,10 @@ def get_args_parser():
     return parser
 
 def train_pl(args):
+    # Default global batch size to temporal batch size if not specified
+    if args.batch_size_global_per_gpu is None:
+        args.batch_size_global_per_gpu = args.batch_size_temporal_per_gpu
+
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -130,7 +157,7 @@ def train_pl(args):
         args.local_crops_number,
     )
     
-    # 1. Image Dataset (Puzzle)
+    # 1. Image Dataset (Puzzle) — unchanged
     pred_size = args.patch_size * 8 if 'swin' in args.arch else args.patch_size
     dataset_image = ImageFolderMask_puzzle(
         args.data_path, 
@@ -144,31 +171,52 @@ def train_pl(args):
     )
     print(f"Data loaded: there are {len(dataset_image)} images.")
     
-    # 2. Temporal Dataset (Video)
-    dataset_temporal = Temporal_RandStep_dataset(lmdb_path=args.data_path, img_size=224)
-    print(f"Data loaded: there are {len(dataset_temporal)} video clips.")
+    # 2. Temporal Dataset — LOCAL (original randstep)
+    dataset_temporal_local = Temporal_RandStep_dataset(
+        lmdb_path=args.data_path, img_size=224, sampling_mode='randstep',
+    )
+    print(f"[Local  Temporal] {len(dataset_temporal_local)} clips (randstep)")
 
-    # Balance iterations
-    N_img,  B_img = len(dataset_image),  args.batch_size_per_gpu
-    N_vid0, B_vid = len(dataset_temporal), args.batch_size_temporal_per_gpu
-    iter_img = max(1, N_img  // B_img)
-    iter_vid = max(1, N_vid0 // B_vid)
-    repeat_factor = math.ceil(iter_img / iter_vid)
-    
-    dataset_temporal = RepeatDataset(dataset_temporal, repeat_factor)
+    # 3. Temporal Dataset — GLOBAL (new 8-segment)                       # <<< NEW
+    dataset_temporal_global = Temporal_RandStep_dataset(
+        lmdb_path=args.data_path, img_size=224, sampling_mode='global',
+    )
+    print(f"[Global Temporal] {len(dataset_temporal_global)} clips (global)")
+
+    # Balance iterations — local temporal
+    N_img, B_img = len(dataset_image), args.batch_size_per_gpu
+    iter_img = max(1, N_img // B_img)
+
+    N_loc, B_loc = len(dataset_temporal_local), args.batch_size_temporal_per_gpu
+    iter_loc = max(1, N_loc // B_loc)
+    repeat_local = math.ceil(iter_img / iter_loc)
+    dataset_temporal_local = RepeatDataset(dataset_temporal_local, repeat_local)
+
+    # Balance iterations — global temporal                               # <<< NEW
+    N_glb, B_glb = len(dataset_temporal_global), args.batch_size_global_per_gpu
+    iter_glb = max(1, N_glb // B_glb)
+    repeat_global = math.ceil(iter_img / iter_glb)
+    dataset_temporal_global = RepeatDataset(dataset_temporal_global, repeat_global)
     
     # Samplers & Loaders
     sampler_image = torch.utils.data.DistributedSampler(dataset_image, shuffle=True)
-    sampler_temporal = torch.utils.data.DistributedSampler(dataset_temporal, shuffle=True)
+
+    sampler_temporal_local = torch.utils.data.DistributedSampler(dataset_temporal_local, shuffle=True)
+    sampler_temporal_global = torch.utils.data.DistributedSampler(dataset_temporal_global, shuffle=True)  # <<< NEW
     
     data_loader_image = torch.utils.data.DataLoader(
         dataset_image, sampler=sampler_image,
         batch_size=args.batch_size_per_gpu, num_workers=args.num_workers,
         pin_memory=True, drop_last=True
     )
-    data_loader_temporal = torch.utils.data.DataLoader(
-        dataset_temporal, sampler=sampler_temporal,
+    data_loader_temporal_local = torch.utils.data.DataLoader(
+        dataset_temporal_local, sampler=sampler_temporal_local,
         batch_size=args.batch_size_temporal_per_gpu, num_workers=args.num_workers,
+        pin_memory=True, drop_last=True
+    )
+    data_loader_temporal_global = torch.utils.data.DataLoader(                # <<< NEW
+        dataset_temporal_global, sampler=sampler_temporal_global,
+        batch_size=args.batch_size_global_per_gpu, num_workers=args.num_workers,
         pin_memory=True, drop_last=True
     )
 
@@ -212,6 +260,7 @@ def train_pl(args):
     puzzle_decoder = PuzzleDecoder(attn_mul=4, num_blocks=1, embed_dim=backbone_dim, num_heads=12 if backbone_dim==768 else 8).cuda()
     puzzle_decoder = nn.parallel.DistributedDataParallel(puzzle_decoder, device_ids=[args.gpu], broadcast_buffers=False)
 
+    # TemporalHead is SHARED between local and global temporal losses
     temporal_head = TemporalHead(backbone_dim=backbone_dim).cuda()
     temporal_head = nn.parallel.DistributedDataParallel(temporal_head, device_ids=[args.gpu], broadcast_buffers=False)
     
@@ -286,9 +335,6 @@ def train_pl(args):
     # ============ Resume Training ============
     to_restore = {"epoch": 0}
     if args.load_from:
-        checkpoint_path = os.path.join(args.output_dir, args.load_from)
-        print(f"Attempting to load checkpoint from: {checkpoint_path}")
-        print(f"File exists: {os.path.exists(checkpoint_path)}")
         utils.restart_from_checkpoint(
             os.path.join(args.output_dir, args.load_from),
             run_variables=to_restore,
@@ -299,17 +345,27 @@ def train_pl(args):
     start_epoch = to_restore["epoch"]
 
     print("Starting Training!")
+    print(f"  loss_temporal:        lambda=1.0 (local randstep, always on)")
+    print(f"  loss_temporal_global: lambda={args.lambda_temporal_global}, "
+          f"start_epoch={args.start_epoch_global}")
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
         data_loader_image.sampler.set_epoch(epoch)
         data_loader_image.dataset.set_epoch(epoch)
-        dataset_temporal.dataset.set_epoch(epoch)
-        data_loader_temporal.sampler.set_epoch(epoch)
+
+        # Local temporal
+        dataset_temporal_local.dataset.set_epoch(epoch)
+        data_loader_temporal_local.sampler.set_epoch(epoch)
+
+        # Global temporal                                                # <<< NEW
+        dataset_temporal_global.dataset.set_epoch(epoch)
+        data_loader_temporal_global.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
             student, teacher, teacher_without_ddp, ibot_loss, temporal_head, puzzle_decoder, pl_loss_fn,
-            data_loader_image, data_loader_temporal, optimizer,
+            data_loader_image, data_loader_temporal_local, data_loader_temporal_global,   # <<< NEW: pass both
+            optimizer,
             lr_schedule, lr_schedule_head, wd_schedule, momentum_schedule,
             epoch, fp16_scaler, args
         )
@@ -345,13 +401,16 @@ def train_pl(args):
 
 
 def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_head, puzzle_decoder, pl_loss_fn, 
-                    data_loader_image, data_loader_temporal, optimizer, 
+                    data_loader_image, data_loader_temporal_local, data_loader_temporal_global,   # <<< NEW
+                    optimizer, 
                     lr_schedule, lr_schedule_head, wd_schedule, momentum_schedule, 
                     epoch, fp16_scaler, args):
     
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    iter_temporal = iter(data_loader_temporal)
+
+    iter_temporal_local = iter(data_loader_temporal_local)
+    iter_temporal_global = iter(data_loader_temporal_global)              # <<< NEW
     
     # Common parameters for EMA
     names_q, params_q, names_k, params_k = [], [], [], []
@@ -364,11 +423,19 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_h
     params_k = [param_k for name_k, param_k in zip(names_k, params_k) if name_k in names_common]
 
     for it_curr, (images, masks, puzzle_images) in enumerate(metric_logger.log_every(data_loader_image, 100, header)):
+        # --- Fetch local temporal clips ---
         try:
-            clips = next(iter_temporal)
+            clips_local = next(iter_temporal_local)
         except StopIteration:
-            iter_temporal = iter(data_loader_temporal)
-            clips = next(iter_temporal)
+            iter_temporal_local = iter(data_loader_temporal_local)
+            clips_local = next(iter_temporal_local)
+
+        # --- Fetch global temporal clips ---                            # <<< NEW
+        try:
+            clips_global = next(iter_temporal_global)
+        except StopIteration:
+            iter_temporal_global = iter(data_loader_temporal_global)
+            clips_global = next(iter_temporal_global)
 
         it = len(data_loader_image) * epoch + it_curr
         
@@ -381,7 +448,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_h
         # Move to GPU
         images = [im.cuda(non_blocking=True) for im in images]
         masks = [msk.cuda(non_blocking=True) for msk in masks]   
-        clips = clips.cuda(non_blocking=True)
+        clips_local = clips_local.cuda(non_blocking=True)
+        clips_global = clips_global.cuda(non_blocking=True)             # <<< NEW
         
         # Puzzle branch inputs
         current_image = puzzle_images[0].cuda(non_blocking=True)
@@ -394,14 +462,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_h
             student_output = student(images[:args.global_crops_number], mask=masks[:args.global_crops_number])  
 
             # --- Puzzle Forward ---
-            # Get current image patch embeddings 
             current_patch = student.module.backbone(current_image, mask=masks[2+args.local_crops_number], no_pe=True)[:,1:,:]
         
             student.module.backbone.masked_im_modeling = False            
-            # Local views
             student_local_cls = student(images[args.global_crops_number:])[0] if len(images) > args.global_crops_number else None
 
-            # Neighbor image patch embeddings       
             with torch.no_grad():
                 past_neighbor_patch = student.module.backbone(past_image, no_pe=True)[:,1:,:]   
                 future_neighbor_patch = student.module.backbone(future_image, no_pe=True)[:,1:,:]   
@@ -418,20 +483,38 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_h
             loss_dict_ibot = ibot_loss(student_output, teacher_output, student_local_cls, masks, epoch)
             loss_ibot = loss_dict_ibot.pop('loss')
 
-            # --- Temporal Branch Forward ---
-            B, T, C, H, W = clips.shape
-            flat = clips.view(B*T, C, H, W)
+            # --- Local Temporal Branch (original) ---
+            B_l, T_l, C_l, H_l, W_l = clips_local.shape
+            flat_local = clips_local.view(B_l * T_l, C_l, H_l, W_l)
             student.module.backbone.masked_im_modeling = False
-            feat = student.module.backbone(flat)[:, 0, :].view(B, T, -1)
+            feat_local = student.module.backbone(flat_local)[:, 0, :].view(B_l, T_l, -1)
             student.module.backbone.masked_im_modeling = True
             
-            logits = temporal_head(feat).squeeze(-1)
-            loss_temporal = pl_loss_fn(logits.float())
-            # Note: Temporal schedule was commented out in original. Uncomment if needed:
-            # loss_temporal = cosine_lambda(args.lambda_video, args.start_epoch_video, epoch, it_curr, len(data_loader_image)) * loss_temporal
+            logits_local = temporal_head(feat_local).squeeze(-1)
+            loss_temporal = pl_loss_fn(logits_local.float())
+
+            # --- Global Temporal Branch (NEW) ---                       # <<< NEW START
+            B_g, T_g, C_g, H_g, W_g = clips_global.shape
+            flat_global = clips_global.view(B_g * T_g, C_g, H_g, W_g)
+            student.module.backbone.masked_im_modeling = False
+            feat_global = student.module.backbone(flat_global)[:, 0, :].view(B_g, T_g, -1)
+            student.module.backbone.masked_im_modeling = True
+            
+            logits_global = temporal_head(feat_global).squeeze(-1)
+            loss_temporal_global_raw = pl_loss_fn(logits_global.float())
+
+            # Apply schedule: cosine warmup from start_epoch_global
+            if args.start_epoch_global > 0:
+                loss_temporal_global = cosine_lambda(
+                    args.lambda_temporal_global, args.start_epoch_global, 
+                    epoch, it_curr, len(data_loader_image)
+                ) * loss_temporal_global_raw
+            else:
+                loss_temporal_global = args.lambda_temporal_global * loss_temporal_global_raw
+            # <<< NEW END
             
             # Total Loss
-            loss = loss_ibot + loss_puzzle + loss_temporal
+            loss = loss_ibot + loss_puzzle + loss_temporal + loss_temporal_global   # <<< MODIFIED
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -474,6 +557,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, ibot_loss, temporal_h
             metric_logger.update(**{key: value.item()})
         metric_logger.update(loss_puzzle=loss_puzzle.item())
         metric_logger.update(loss_temporal=loss_temporal.item())
+        metric_logger.update(loss_temporal_global=loss_temporal_global.item())   # <<< NEW
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
         metric_logger.update(acc=acc)
@@ -556,7 +640,7 @@ class DataAugmentation(object):
         return (crops, puzzles)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('pl_stitch', parents=[get_args_parser()])
+    parser = argparse.ArgumentParser('pl_stitch_global', parents=[get_args_parser()])
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     train_pl(args)
