@@ -19,5 +19,5 @@ __pycache__/
 *.pyc
 *.pyo
 
-# KNN 결과 (선택사항 - 필요하면 제외)
+# KNN 결과 
 knn_results_cholec80/
